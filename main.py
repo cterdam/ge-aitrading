@@ -268,6 +268,28 @@ def raw_collect_command(symbol: str) -> int:
     return 0
 
 
+def market_check_verify_command(snapshot: str, output: str | None) -> int:
+    from monitoring.market_checks import to_evidence_document, verify_market_checks
+
+    try:
+        results = verify_market_checks(snapshot)
+    except (OSError, ValueError) as error:
+        print(json.dumps({"status": "INVALID", "error": str(error)}, indent=2))
+        return 1
+    document = to_evidence_document(results)
+    if output is not None:
+        destination = Path(output)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(destination)
+        document["written_to"] = str(destination)
+    print(json.dumps(document, indent=2, sort_keys=True))
+    # Exit non-zero unless every check is a PASS, so scripts fail closed.
+    all_pass = all(result.passed for result in results.values())
+    return 0 if all_pass else 2
+
+
 def raw_verify_command(path: str, sha256: str | None) -> int:
     try:
         receipt = RawDataVault.verify(path, sha256)
@@ -448,6 +470,14 @@ def parse_args() -> argparse.Namespace:
     )
     raw_verify_parser.add_argument("path")
     raw_verify_parser.add_argument("--sha256")
+    market_check_parser = subparsers.add_parser(
+        "market-check-verify",
+        help="Deterministically adjudicate the six market checks from a raw snapshot.",
+    )
+    market_check_parser.add_argument("snapshot", help="Path to an immutable raw vault snapshot.")
+    market_check_parser.add_argument(
+        "--out", help="Write the evidence document (feed to shadow-readiness --market-checks)."
+    )
     ack_parser = subparsers.add_parser(
         "scheduler-ack", help="Atomically record proof that a scheduled task started."
     )
@@ -511,6 +541,8 @@ def main() -> int:
         return raw_collect_command(args.symbol)
     if args.command == "raw-verify":
         return raw_verify_command(args.path, args.sha256)
+    if args.command == "market-check-verify":
+        return market_check_verify_command(args.snapshot, args.out)
     if args.command == "scheduler-ack":
         return scheduler_ack_command(args.run_id, args.scheduled_for)
     if args.command == "scheduler-check":

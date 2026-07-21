@@ -106,8 +106,19 @@ Report Monday Shadow readiness without activating anything:
 python3 main.py shadow-readiness
 ```
 
-After completing the six market-time checks with concrete evidence (see
-`config/market_checks.example.json`), the same report can consume them:
+Adjudicate the six market checks deterministically from an immutable raw
+snapshot (replaces trusting the collection agent's self-report). UNKNOWN and
+FAIL both fail closed; a check counts only when its status is PASS with
+evidence. Account-cash and orders/positions checks return UNKNOWN unless a
+separately reconciled result is supplied, because the market-data snapshot
+deliberately excludes those domains:
+
+```bash
+python3 main.py market-check-verify logs/raw/YYYY-MM-DD/SNAPSHOT.json --out logs/qualification/market_checks_YYYYMMDD.json
+```
+
+Feed that evidence document to the readiness report (a check marked passed
+without non-empty evidence is rejected):
 
 ```bash
 python3 main.py shadow-readiness --market-checks logs/qualification/market_checks_YYYYMMDD.json
