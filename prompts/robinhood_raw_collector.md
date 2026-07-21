@@ -20,3 +20,9 @@ timestamp contained in the response, never a model-generated current time.
 Never output credentials, tokens, account numbers, names, prose, or markdown.
 Local deterministic code—not the model—will compute all features and select
 contracts.
+
+Your final message must be exactly one JSON object matching
+`config/raw_mcp_snapshot.schema.json` (fields: `schema_version` = 1,
+`source_updated_at`, `request`, `response`). No prose before or after it, no
+markdown code fences. Local deterministic code parses your final message
+directly and rejects anything else.

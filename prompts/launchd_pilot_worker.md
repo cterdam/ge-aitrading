@@ -26,7 +26,7 @@ formal Shadow.
 For a CANARY run, call only the project-provided `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 main.py raw-collect
 SPY`, verify the returned immutable snapshot with `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 main.py raw-verify`,
 record the path and SHA-256, rebuild the dashboard, and stop. After-hours data
-may be stale; this canary tests launchd -> Codex CLI -> official read-only MCP
+may be stale; this canary tests launchd -> Claude Code CLI -> official read-only MCP
 -> durable file output, not market freshness or strategy performance.
 
 For a PILOT_SAMPLE run:
@@ -45,7 +45,7 @@ For a PILOT_SAMPLE run:
 6. Simulated entry requires a later observed ask at or below the recorded
    limit. Simulated exit uses observed bid. Record no-fill, spread, latency,
    and base/stress friction; never assume a mark fill.
-7. Save trajectory events under `logs/quote_trajectories/2026-07-21/` conforming
+7. Save trajectory events under `{trajectory_root}/` conforming
    to `config/quote_trajectory.schema.json`.
 8. Stop new MCP calls after six minutes and finish all logs within eight.
 
@@ -54,5 +54,5 @@ formal performance, report missing schedules and incomplete trajectories, and
 do not backfill market data.
 
 In all cases write a terminal success/failure summary under
-`logs/launchd_worker/2026-07-21/` and rebuild `dashboard/index.html`. Fail
+`{log_root}/` and rebuild `dashboard/index.html`. Fail
 closed on any uncertainty.

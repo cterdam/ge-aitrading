@@ -7,12 +7,23 @@ from pathlib import Path
 from unittest.mock import patch
 
 from execution.official_mcp_collector import (
+    EXPLICITLY_DISALLOWED_TOOLS,
+    MCP_SERVER_NAME,
     READ_ONLY_ROBINHOOD_TOOLS,
-    _read_only_mcp_overrides,
     OfficialCollectorError,
+    _final_json_payload,
     collect_official_raw_snapshot,
     collect_official_shadow_snapshot,
+    read_only_allowed_tools,
 )
+
+
+def _runner_stdout(final_message: str) -> str:
+    return json.dumps({"type": "result", "is_error": False, "result": final_message})
+
+
+def _fake_result(returncode: int, stdout: str = "", stderr: str = ""):
+    return type("Result", (), {"returncode": returncode, "stdout": stdout, "stderr": stderr})()
 
 
 class ReadOnlyMcpPolicyTests(unittest.TestCase):
@@ -22,14 +33,34 @@ class ReadOnlyMcpPolicyTests(unittest.TestCase):
         forbidden = ("place_", "review_", "cancel_", "update_", "remove_", "add_")
         self.assertFalse(any(name.startswith(forbidden) for name in READ_ONLY_ROBINHOOD_TOOLS))
 
-    def test_every_visible_tool_has_explicit_approval_override(self) -> None:
-        serialized = " ".join(_read_only_mcp_overrides())
-        self.assertIn("enabled_tools=", serialized)
-        for name in READ_ONLY_ROBINHOOD_TOOLS:
-            self.assertIn(
-                f"tools.{name}.approval_mode=\"approve\"",
-                serialized,
-            )
+    def test_allowed_tools_are_scoped_to_the_robinhood_server(self) -> None:
+        allowed = read_only_allowed_tools().split(",")
+        self.assertEqual(len(READ_ONLY_ROBINHOOD_TOOLS), len(allowed))
+        for entry in allowed:
+            self.assertTrue(entry.startswith(f"mcp__{MCP_SERVER_NAME}__get_"), entry)
+
+    def test_local_mutation_tools_are_explicitly_disallowed(self) -> None:
+        for tool in ("Bash", "Write", "Edit", "WebFetch"):
+            self.assertIn(tool, EXPLICITLY_DISALLOWED_TOOLS)
+
+
+class FinalJsonPayloadTests(unittest.TestCase):
+    def test_plain_json_final_message_is_parsed(self) -> None:
+        payload = _final_json_payload(_runner_stdout('{"schema_version": 1}'))
+        self.assertEqual({"schema_version": 1}, payload)
+
+    def test_fenced_json_final_message_is_parsed(self) -> None:
+        payload = _final_json_payload(_runner_stdout('```json\n{"schema_version": 1}\n```'))
+        self.assertEqual({"schema_version": 1}, payload)
+
+    def test_error_result_fails_closed(self) -> None:
+        stdout = json.dumps({"type": "result", "is_error": True, "result": "{}"})
+        with self.assertRaises(OfficialCollectorError):
+            _final_json_payload(stdout)
+
+    def test_prose_final_message_fails_closed(self) -> None:
+        with self.assertRaises(OfficialCollectorError):
+            _final_json_payload(_runner_stdout("I could not collect the data."))
 
 
 class OfficialMcpCollectorTests(unittest.TestCase):
@@ -43,20 +74,15 @@ class OfficialMcpCollectorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "prompts").mkdir()
-            (root / "config").mkdir()
             (root / "prompts/robinhood_raw_collector.md").write_text(
                 "collect {symbol}", encoding="utf-8"
             )
-            (root / "config/raw_mcp_snapshot.schema.json").write_text(
-                "{}", encoding="utf-8"
-            )
 
             def fake_run(command, **kwargs):
-                result_path = Path(command[command.index("--output-last-message") + 1])
-                result_path.write_text(json.dumps(envelope), encoding="utf-8")
-                return type("Result", (), {"returncode": 0, "stderr": ""})()
+                return _fake_result(0, stdout=_runner_stdout(json.dumps(envelope)))
 
-            with patch("execution.official_mcp_collector.subprocess.run", side_effect=fake_run):
+            with patch("execution.official_mcp_collector.claude_binary", return_value="claude"), \
+                    patch("execution.official_mcp_collector.subprocess.run", side_effect=fake_run):
                 receipt = collect_official_raw_snapshot(
                     "SPY", project_root=root, vault_root="logs/raw"
                 )
@@ -74,28 +100,45 @@ class OfficialMcpCollectorTests(unittest.TestCase):
             output = Path(directory) / "out.json"
 
             def fake_run(command, **kwargs):
-                result_path = Path(command[command.index("--output-last-message") + 1])
-                result_path.write_text(example, encoding="utf-8")
-                return type("Result", (), {"returncode": 0})()
+                return _fake_result(0, stdout=_runner_stdout(example))
 
-            with patch("execution.official_mcp_collector.subprocess.run", side_effect=fake_run) as run:
+            with patch("execution.official_mcp_collector.claude_binary", return_value="claude"), \
+                    patch("execution.official_mcp_collector.subprocess.run", side_effect=fake_run) as run:
                 result = collect_official_shadow_snapshot("sofi", output)
             self.assertEqual(output, result)
             self.assertEqual(1, json.loads(output.read_text())["schema_version"])
             command = run.call_args.args[0]
-            self.assertIn("read-only", command)
-            self.assertNotIn("dangerously-bypass-approvals-and-sandbox", command)
+            self.assertIn("--allowedTools", command)
+            allowed = command[command.index("--allowedTools") + 1]
+            self.assertEqual(read_only_allowed_tools(), allowed)
+            self.assertIn("--disallowedTools", command)
+            self.assertNotIn("--dangerously-skip-permissions", command)
 
     def test_failed_collector_does_not_create_output(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "out.json"
-            with patch(
-                "execution.official_mcp_collector.subprocess.run",
-                return_value=type("Result", (), {"returncode": 1})(),
-            ):
+            with patch("execution.official_mcp_collector.claude_binary", return_value="claude"), \
+                    patch(
+                        "execution.official_mcp_collector.subprocess.run",
+                        return_value=_fake_result(1),
+                    ):
                 with self.assertRaises(OfficialCollectorError):
                     collect_official_shadow_snapshot("SPY", output)
             self.assertFalse(output.exists())
+
+    def test_invalid_snapshot_leaves_no_partial_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "out.json"
+
+            def fake_run(command, **kwargs):
+                return _fake_result(0, stdout=_runner_stdout('{"schema_version": 999}'))
+
+            with patch("execution.official_mcp_collector.claude_binary", return_value="claude"), \
+                    patch("execution.official_mcp_collector.subprocess.run", side_effect=fake_run):
+                with self.assertRaises(Exception):
+                    collect_official_shadow_snapshot("SPY", output)
+            self.assertFalse(output.exists())
+            self.assertEqual([], list(Path(directory).glob("*.tmp")))
 
 
 if __name__ == "__main__":

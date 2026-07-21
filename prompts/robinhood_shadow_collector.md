@@ -26,5 +26,8 @@ Collect a normalized snapshot for underlying {symbol}. Required research:
    source_updated_at; keep that field null and preserve the interval boundary and immutable local
    receipt time instead. Do not invent missing values; use null.
 
-Return only JSON matching the provided output schema. The snapshot is simulation-only and must
-not contain prose, markdown, secrets, account identifiers, or claims of a fill.
+Your final message must be exactly one JSON object matching
+`config/shadow_input.schema.json` — no prose before or after it and no markdown
+code fences; local deterministic code parses your final message directly and
+rejects anything else. The snapshot is simulation-only and must not contain
+prose, markdown, secrets, account identifiers, or claims of a fill.

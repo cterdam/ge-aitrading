@@ -16,7 +16,7 @@ accounting, order validity, and execution state.
 - Formal multi-day Shadow evidence collection: not started
 - System mode: `READ_ONLY`
 - Live trading: disabled
-- Robinhood order tools: disabled by Codex MCP allowlist
+- Robinhood order tools: never allowlisted in the Claude Code CLI runtime
 - Local kill switch: engaged by default
 - Automated local safety/research tests: 230 passing as of 2026-07-20 post-close
 
@@ -172,8 +172,8 @@ This exercises local safety/fault definitions and writes a sanitized report to
 `logs/qualification/`. It is not a substitute for official market integration,
 formal Shadow evidence, or the owner emergency-stop rehearsal.
 
-Collect one normalized snapshot using the authorized Codex CLI and official
-Robinhood read-only MCP. This command can consume Codex usage and requires the
+Collect one normalized snapshot using the authorized Claude Code CLI and
+official Robinhood read-only MCP. This command consumes Claude usage and requires the
 existing OAuth session; it never enables order tools:
 
 ```bash

@@ -15,8 +15,9 @@ if str(ROOT) not in sys.path:
 
 from execution.official_mcp_collector import (
     OfficialCollectorError,
-    _read_only_mcp_overrides,
+    claude_binary,
     collect_official_raw_snapshot,
+    read_only_allowed_tools,
 )
 from execution.raw_data_vault import RawDataVault
 from main import build_status
@@ -27,9 +28,22 @@ from monitoring.scheduler_watchdog import unresolved_incident_ids
 
 
 LOCAL = SESSION_TIMEZONE
-CODEX = Path.home() / ".local/bin/codex"
 LOCK_PATH = ROOT / "logs/scheduler/launchd-shadow-worker.lock"
 SLOTS = DAILY_SLOTS
+
+# The pilot agent needs read-only Robinhood MCP tools plus the ability to run
+# the project's deterministic CLI and write its own logs inside the workspace.
+# Everything else stays denied by Claude Code's print-mode default.
+PILOT_ALLOWED_TOOLS = ",".join((
+    read_only_allowed_tools(),
+    "Read",
+    "Glob",
+    "Grep",
+    "Write",
+    "Edit",
+    "Bash(python3:*)",
+    "Bash(/Library/Frameworks/Python.framework/Versions/3.13/bin/python3:*)",
+))
 
 
 def _log_root(now: datetime) -> Path:
@@ -174,14 +188,25 @@ def main() -> int:
             run_id=run_id,
             scheduled_for=scheduled.isoformat(),
             symbol=symbol,
+            log_root=str(log_root),
+            trajectory_root=str(ROOT / "logs/quote_trajectories" / now.date().isoformat()),
         )
         stdout_path = log_root / f"{run_id}.stdout.jsonl"
         stderr_path = log_root / f"{run_id}.stderr.log"
-        command = [
-            str(CODEX), "exec", "-", "--ephemeral", "--json", "--color", "never",
-            "--sandbox", "workspace-write", "--cd", str(ROOT),
-            *_read_only_mcp_overrides(),
-        ]
+        try:
+            command = [
+                claude_binary(), "-p",
+                "--output-format", "stream-json", "--verbose",
+                "--allowedTools", PILOT_ALLOWED_TOOLS,
+            ]
+        except OfficialCollectorError as error:
+            _atomic_json(summary_path, {
+                "status": "CLAUDE_CLI_NOT_FOUND",
+                "run_id": run_id,
+                "reason": str(error),
+                "ack_path": str(ack_path),
+            })
+            return 2
         started = datetime.now(timezone.utc)
         try:
             with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open("w", encoding="utf-8") as stderr:
@@ -189,15 +214,16 @@ def main() -> int:
                     command,
                     input=prompt,
                     text=True,
+                    cwd=ROOT,
                     stdout=stdout,
                     stderr=stderr,
                     timeout=720,
                     check=False,
                 )
-            result_status = "COMPLETED" if completed.returncode == 0 else "CODEX_FAILED"
+            result_status = "COMPLETED" if completed.returncode == 0 else "AGENT_FAILED"
             return_code = completed.returncode
         except (OSError, subprocess.TimeoutExpired) as error:
-            result_status = "CODEX_TIMEOUT_OR_START_FAILURE"
+            result_status = "AGENT_TIMEOUT_OR_START_FAILURE"
             return_code = 2
             stderr_path.write_text(type(error).__name__ + "\n", encoding="utf-8")
         ended = datetime.now(timezone.utc)
@@ -212,7 +238,8 @@ def main() -> int:
             "started_at": started.isoformat(),
             "ended_at": ended.isoformat(),
             "duration_seconds": (ended - started).total_seconds(),
-            "codex_return_code": return_code,
+            "agent_runtime": "CLAUDE_CODE_CLI",
+            "agent_return_code": return_code,
             "read_only": True,
             "live_trading_enabled": False,
             "order_tools_enabled": False,

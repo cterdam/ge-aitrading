@@ -48,7 +48,7 @@ Any failure means `NO_GO`.
 
 ## 09:15–09:30 ET — connection observation
 
-1. Open the Codex CLI in this repository.
+1. Open the Claude Code CLI in this repository.
 2. Confirm Robinhood MCP authentication is healthy.
 3. Confirm its enabled tool list remains read-only. Any order/review/cancel or
    mutation tool becoming available is `NO_GO` until the allowlist is audited.
