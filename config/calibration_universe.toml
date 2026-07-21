@@ -1,0 +1,20 @@
+schema_version = 1
+status = "RESEARCH_ONLY"
+purpose = "COST_WALL_CALIBRATION"
+
+# This is NOT a trading universe and must never become one.
+#
+# It exists only so `friction-calibrate` can measure the AFFORDABLE option
+# universe (contracts within the account premium ceiling), which the
+# quality-based trading universe in config/universe.toml structurally lacks on
+# expensive mega-cap underlyings. These are cheap, liquid-optionable names whose
+# 0.30-0.65 delta / 7-21 DTE contracts can plausibly sit under the $120 ceiling.
+#
+# The trading path reads config/universe.toml, never this file. Using cheap
+# underlyings for actual trading would require the owner to consciously revisit
+# `allow_price_based_small_cap_bias = false` in config/universe.toml — a
+# governance decision, not a research one. Membership here is a set of
+# candidates to be confirmed by real calibration data, not an endorsement.
+never_a_trading_universe = true
+
+symbols = ["F", "SOFI", "T", "BAC", "INTC", "PLTR", "NIO", "XLF"]

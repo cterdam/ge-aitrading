@@ -195,6 +195,18 @@ clear the liquidity filter, and — with `--underlying` — a calibrated cost wa
 An empty result under `--max-premium` is itself a finding: the sampled
 underlyings have no delta-eligible contract within the premium ceiling.
 
+To give the calibrator affordable-universe data, collect raw snapshots for the
+research-only cheap-underlying candidate list (market hours):
+
+```bash
+python3 main.py raw-collect-universe
+```
+
+These symbols exist ONLY to measure the affordable option universe and are
+never trade candidates — the trading path reads `config/universe.toml`, which
+stays quality-based (`allow_price_based_small_cap_bias = false`). Trading cheap
+underlyings would be a separate owner governance decision.
+
 Audit the complete inventory of human-selected thresholds. The included file
 is intentionally marked unvalidated and therefore returns `REVIEW_REQUIRED`:
 

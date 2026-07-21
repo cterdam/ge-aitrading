@@ -405,6 +405,48 @@ def market_check_verify_command(snapshot: str, output: str | None) -> int:
     return 0 if all_pass else 2
 
 
+def raw_collect_universe_command(path: str) -> int:
+    """Collect a raw snapshot for each research-only calibration symbol.
+
+    Read-only and per-symbol fail-closed: one symbol's failure is recorded and
+    the sweep continues. These snapshots feed friction-calibrate; the symbols
+    are never trade candidates (see config/calibration_universe.toml).
+    """
+
+    from research.calibration_universe import (
+        InvalidCalibrationUniverseError,
+        load_calibration_universe,
+    )
+
+    try:
+        symbols = load_calibration_universe(path)
+    except (OSError, InvalidCalibrationUniverseError, ValueError) as error:
+        print(json.dumps({"status": "INVALID", "error": str(error)}, indent=2))
+        return 1
+    results: dict[str, object] = {}
+    collected = 0
+    for symbol in symbols:
+        try:
+            receipt = collect_official_raw_snapshot(symbol)
+            results[symbol] = {
+                "status": "RAW_SNAPSHOT_STORED",
+                "snapshot_id": receipt.snapshot_id,
+                "content_sha256": receipt.content_sha256,
+                "path": str(receipt.path),
+            }
+            collected += 1
+        except (OfficialCollectorError, ValueError) as error:
+            results[symbol] = {"status": "REJECTED", "error": str(error)}
+    print(json.dumps({
+        "status": "SWEEP_COMPLETE" if collected else "SWEEP_ALL_FAILED",
+        "read_only": True,
+        "symbols": len(symbols),
+        "collected": collected,
+        "results": results,
+    }, indent=2, sort_keys=True))
+    return 0 if collected else 1
+
+
 def raw_verify_command(path: str, sha256: str | None) -> int:
     try:
         receipt = RawDataVault.verify(path, sha256)
@@ -611,6 +653,14 @@ def parse_args() -> argparse.Namespace:
         "raw-collect", help="Store one transport-only official MCP snapshot in the raw vault."
     )
     raw_collect_parser.add_argument("symbol", help="Underlying equity symbol.")
+    raw_universe_parser = subparsers.add_parser(
+        "raw-collect-universe",
+        help="Collect a raw snapshot for each research-only cost-wall calibration symbol.",
+    )
+    raw_universe_parser.add_argument(
+        "--universe", default="config/calibration_universe.toml",
+        help="Path to the research-only calibration universe (never a trading universe).",
+    )
     raw_verify_parser = subparsers.add_parser(
         "raw-verify", help="Verify canonical encoding and optional SHA-256 of a raw snapshot."
     )
@@ -689,6 +739,8 @@ def main() -> int:
         return shadow_collect_command(args.symbol, args.output)
     if args.command == "raw-collect":
         return raw_collect_command(args.symbol)
+    if args.command == "raw-collect-universe":
+        return raw_collect_universe_command(args.universe)
     if args.command == "raw-verify":
         return raw_verify_command(args.path, args.sha256)
     if args.command == "market-check-verify":
