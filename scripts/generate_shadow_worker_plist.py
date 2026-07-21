@@ -13,11 +13,13 @@ Usage:
 Then review the file, install it with launchctl, and pre-register the same
 day's expectations:
     python3 main.py scheduler-expect-day 2026-07-22
+
+To do both plists plus expectations in one step, prefer:
+    python3 scripts/prepare_observation_day.py 2026-07-22
 """
 
 from __future__ import annotations
 
-import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -28,33 +30,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from monitoring.daily_schedule import DAILY_SLOTS
+from monitoring.launchd_paths import launch_path
 
 LABEL = "com.robinhood-ai-trader.shadow-worker-v2"
-
-
-def _launch_path(python: Path) -> str:
-    """PATH for the launchd session so the pilot agent can find python3/claude.
-
-    launchd hands processes a minimal PATH, so we prepend the interpreter's own
-    bin dir and the common CLI install locations (Homebrew, /usr/local, the
-    Claude native installer, ~/.local/bin).
-    """
-
-    home = Path.home()
-    candidates = [
-        str(python.parent),
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        str(home / ".local/bin"),
-        str(home / ".claude/local"),
-        "/usr/bin",
-        "/bin",
-    ]
-    seen: list[str] = []
-    for entry in candidates:
-        if entry not in seen:
-            seen.append(entry)
-    return ":".join(seen)
 
 
 def render(day: date, *, python: Path | None = None, workdir: Path | None = None) -> str:
@@ -63,7 +41,7 @@ def render(day: date, *, python: Path | None = None, workdir: Path | None = None
     python_path = (python or Path(sys.executable)).resolve()
     work = (workdir or ROOT).resolve()
     worker = work / "scripts/launchd_shadow_worker.py"
-    launch_path = _launch_path(python_path)
+    launch_path_value = launch_path(python_path)
 
     intervals = []
     for hour, minute in sorted(DAILY_SLOTS):
@@ -79,7 +57,7 @@ def render(day: date, *, python: Path | None = None, workdir: Path | None = None
     py = escape(str(python_path))
     wk = escape(str(work))
     wkr = escape(str(worker))
-    path_value = escape(launch_path)
+    path_value = escape(launch_path_value)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
