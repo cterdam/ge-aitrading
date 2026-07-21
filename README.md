@@ -106,8 +106,19 @@ Report Monday Shadow readiness without activating anything:
 python3 main.py shadow-readiness
 ```
 
-After completing the six market-time checks with concrete evidence (see
-`config/market_checks.example.json`), the same report can consume them:
+Adjudicate the six market checks deterministically from an immutable raw
+snapshot (replaces trusting the collection agent's self-report). UNKNOWN and
+FAIL both fail closed; a check counts only when its status is PASS with
+evidence. Account-cash and orders/positions checks return UNKNOWN unless a
+separately reconciled result is supplied, because the market-data snapshot
+deliberately excludes those domains:
+
+```bash
+python3 main.py market-check-verify logs/raw/YYYY-MM-DD/SNAPSHOT.json --out logs/qualification/market_checks_YYYYMMDD.json
+```
+
+Feed that evidence document to the readiness report (a check marked passed
+without non-empty evidence is rejected):
 
 ```bash
 python3 main.py shadow-readiness --market-checks logs/qualification/market_checks_YYYYMMDD.json
@@ -154,6 +165,35 @@ Evaluate the accumulated Shadow experiment against activation gates:
 ```bash
 python3 main.py shadow-experiment-report
 ```
+
+Compute the a-priori cost wall and required edge for a single-leg long option
+trade (an instrument-feasibility screen, not a profitability claim). It reports
+the round-trip cost (spread + fees + latency slippage + theta), how far the
+option must rise just to break even, the win rate a given payoff needs to clear
+the wall versus the cost-free breakeven, and — with `--win-rate` — a Monte-Carlo
+expectancy band showing that a positive point estimate at a small trade count
+is not yet evidence:
+
+```bash
+python3 main.py cost-wall --premium 0.50 --spread-pct 0.08 --delta 0.40 --underlying 742 \
+  --gross-win 20 --gross-loss 10 --win-rate 0.55
+```
+
+Friction inputs default to the `[friction_model]` section of `config/safety.toml`.
+
+Replace the assumed spread and theta with values measured from real observed
+option quotes in the raw vault, restricted to the tradeable delta band and
+(optionally) the account premium ceiling — so the wall reflects the account's
+real numbers instead of a placeholder:
+
+```bash
+python3 main.py friction-calibrate --max-premium 120 --underlying 742
+```
+
+It reports the empirical spread/theta/mark distribution, how many contracts
+clear the liquidity filter, and — with `--underlying` — a calibrated cost wall.
+An empty result under `--max-premium` is itself a finding: the sampled
+underlyings have no delta-eligible contract within the premium ceiling.
 
 Audit the complete inventory of human-selected thresholds. The included file
 is intentionally marked unvalidated and therefore returns `REVIEW_REQUIRED`:

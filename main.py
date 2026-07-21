@@ -209,6 +209,121 @@ def shadow_experiment_command() -> int:
     return 0
 
 
+def cost_wall_command(args: argparse.Namespace) -> int:
+    from decimal import Decimal
+
+    from research.cost_wall import (
+        FrictionModel,
+        TradeCostInputs,
+        compute_cost_wall,
+        expectancy_ci,
+        required_expectancy_for_monthly_target,
+        required_win_rate,
+    )
+
+    def dec(value: object) -> Decimal:
+        return Decimal(str(value))
+
+    try:
+        friction = FrictionModel.from_safety_config(SAFETY_CONFIG_PATH)
+        inputs = TradeCostInputs(
+            mid_premium_usd=dec(args.premium),
+            relative_spread=dec(args.spread_pct),
+            delta=dec(args.delta),
+            underlying_price_usd=dec(args.underlying),
+            friction=friction,
+            contracts=args.contracts,
+            holding_fraction_of_day=dec(args.holding_fraction),
+            theta_per_share_per_day_usd=dec(args.theta_per_day),
+        )
+        wall = compute_cost_wall(inputs)
+        result: dict[str, object] = {"cost_wall": wall.to_dict()}
+
+        if args.gross_win is not None and args.gross_loss is not None:
+            monthly_target = required_expectancy_for_monthly_target(
+                account_usd=dec(args.account),
+                monthly_target_pct=dec(args.monthly_target_pct),
+                trades_per_month=args.trades_per_month,
+            )
+            edge = required_win_rate(
+                gross_win_usd=dec(args.gross_win),
+                gross_loss_usd=dec(args.gross_loss),
+                total_cost_usd=dec(wall.total_cost_usd),
+                target_per_trade_usd=monthly_target,
+            )
+            result["required_expectancy_per_trade_for_monthly_target_usd"] = str(monthly_target)
+            result["required_edge"] = edge.to_dict()
+            if args.win_rate is not None:
+                mean, low, high = expectancy_ci(
+                    win_rate=dec(args.win_rate),
+                    gross_win_usd=dec(args.gross_win),
+                    gross_loss_usd=dec(args.gross_loss),
+                    total_cost_usd=dec(wall.total_cost_usd),
+                    trades=args.ci_trades,
+                )
+                result["expectancy_at_assumed_win_rate"] = {
+                    "win_rate": str(dec(args.win_rate)),
+                    "trades_simulated": args.ci_trades,
+                    "mean_expectancy_usd": str(mean),
+                    "ci_low_usd": str(low),
+                    "ci_high_usd": str(high),
+                    "note": "CI straddling 0 means a positive point estimate is not yet evidence.",
+                }
+    except (OSError, ValueError, KeyError) as error:
+        print(json.dumps({"status": "INVALID", "error": str(error)}, indent=2))
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def friction_calibrate_command(args: argparse.Namespace) -> int:
+    from decimal import Decimal
+
+    from research.cost_wall import FrictionModel
+    from research.friction_calibration import (
+        calibrate_friction,
+        calibrated_cost_wall,
+        default_snapshot_paths,
+    )
+
+    def dec(value: object) -> Decimal:
+        return Decimal(str(value))
+
+    paths = args.snapshots or default_snapshot_paths()
+    if not paths:
+        print(json.dumps({"status": "INVALID", "error": "NO_SNAPSHOTS_FOUND"}, indent=2))
+        return 1
+    try:
+        calibration = calibrate_friction(
+            paths,
+            delta_min=dec(args.delta_min),
+            delta_max=dec(args.delta_max),
+            max_relative_spread=dec(args.max_rel_spread),
+            minimum_volume=args.min_volume,
+            minimum_open_interest=args.min_oi,
+            maximum_premium_usd=dec(args.max_premium) if args.max_premium is not None else None,
+        )
+        result: dict[str, object] = {"calibration": calibration.to_dict()}
+        if args.underlying is not None:
+            friction = FrictionModel.from_safety_config(SAFETY_CONFIG_PATH)
+            result["calibrated_cost_wall"] = calibrated_cost_wall(
+                calibration,
+                underlying_price_usd=dec(args.underlying),
+                friction=friction,
+                holding_fraction_of_day=dec(args.holding_fraction),
+            )
+            result["note"] = (
+                "Spread and theta are now measured, not assumed. Basis "
+                f"'{calibration.basis}': if liquidity was unmet, this reflects the "
+                "delta-eligible universe (e.g. after-hours volume was zero)."
+            )
+    except (OSError, ValueError) as error:
+        print(json.dumps({"status": "INVALID", "error": str(error)}, indent=2))
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def parameter_audit_command(path: str) -> int:
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -266,6 +381,28 @@ def raw_collect_command(symbol: str) -> int:
         "path": str(receipt.path),
     }, indent=2, sort_keys=True))
     return 0
+
+
+def market_check_verify_command(snapshot: str, output: str | None) -> int:
+    from monitoring.market_checks import to_evidence_document, verify_market_checks
+
+    try:
+        results = verify_market_checks(snapshot)
+    except (OSError, ValueError) as error:
+        print(json.dumps({"status": "INVALID", "error": str(error)}, indent=2))
+        return 1
+    document = to_evidence_document(results)
+    if output is not None:
+        destination = Path(output)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        temporary.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(destination)
+        document["written_to"] = str(destination)
+    print(json.dumps(document, indent=2, sort_keys=True))
+    # Exit non-zero unless every check is a PASS, so scripts fail closed.
+    all_pass = all(result.passed for result in results.values())
+    return 0 if all_pass else 2
 
 
 def raw_verify_command(path: str, sha256: str | None) -> int:
@@ -430,6 +567,37 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser(
         "shadow-experiment-report", help="Evaluate accumulated Shadow evidence gates."
     )
+    cost_wall_parser = subparsers.add_parser(
+        "cost-wall",
+        help="Compute the a-priori cost wall and required edge for a long option trade.",
+    )
+    cost_wall_parser.add_argument("--premium", required=True, help="Option mid price per share, e.g. 0.50.")
+    cost_wall_parser.add_argument("--spread-pct", required=True, help="Bid/ask spread as fraction of mid, e.g. 0.07.")
+    cost_wall_parser.add_argument("--delta", required=True, help="Option delta magnitude, e.g. 0.40.")
+    cost_wall_parser.add_argument("--underlying", required=True, help="Underlying price, e.g. 742.00.")
+    cost_wall_parser.add_argument("--contracts", type=int, default=1)
+    cost_wall_parser.add_argument("--holding-fraction", default="0.08", help="Hold time as fraction of a 6.5h session.")
+    cost_wall_parser.add_argument("--theta-per-day", default="0.02", help="Theta magnitude per share per day.")
+    cost_wall_parser.add_argument("--gross-win", help="Option $ gain on a winning trade (before costs).")
+    cost_wall_parser.add_argument("--gross-loss", help="Option $ loss magnitude on a losing trade (before costs).")
+    cost_wall_parser.add_argument("--account", default="300", help="Account size for the monthly target.")
+    cost_wall_parser.add_argument("--monthly-target-pct", default="4", help="Monthly net return target, percent.")
+    cost_wall_parser.add_argument("--trades-per-month", type=int, default=20)
+    cost_wall_parser.add_argument("--win-rate", help="Assumed win rate to Monte-Carlo an expectancy CI.")
+    cost_wall_parser.add_argument("--ci-trades", type=int, default=40, help="Trades per Monte-Carlo sequence.")
+    friction_parser = subparsers.add_parser(
+        "friction-calibrate",
+        help="Calibrate cost-wall friction from real observed option quotes in the raw vault.",
+    )
+    friction_parser.add_argument("snapshots", nargs="*", help="Raw snapshot paths (default: all under logs/raw).")
+    friction_parser.add_argument("--delta-min", default="0.30")
+    friction_parser.add_argument("--delta-max", default="0.65")
+    friction_parser.add_argument("--max-rel-spread", default="0.05")
+    friction_parser.add_argument("--min-volume", type=int, default=500)
+    friction_parser.add_argument("--min-oi", type=int, default=500)
+    friction_parser.add_argument("--max-premium", help="Premium ceiling in USD (mid*100), e.g. 120 for the account rule.")
+    friction_parser.add_argument("--underlying", help="Underlying price to also print a calibrated cost wall.")
+    friction_parser.add_argument("--holding-fraction", default="0.08")
     parameter_parser = subparsers.add_parser(
         "parameter-audit", help="Audit the mandatory human-selected parameter evidence inventory."
     )
@@ -448,6 +616,14 @@ def parse_args() -> argparse.Namespace:
     )
     raw_verify_parser.add_argument("path")
     raw_verify_parser.add_argument("--sha256")
+    market_check_parser = subparsers.add_parser(
+        "market-check-verify",
+        help="Deterministically adjudicate the six market checks from a raw snapshot.",
+    )
+    market_check_parser.add_argument("snapshot", help="Path to an immutable raw vault snapshot.")
+    market_check_parser.add_argument(
+        "--out", help="Write the evidence document (feed to shadow-readiness --market-checks)."
+    )
     ack_parser = subparsers.add_parser(
         "scheduler-ack", help="Atomically record proof that a scheduled task started."
     )
@@ -503,6 +679,10 @@ def main() -> int:
         return shadow_replay_command(args.path, pilot=args.pilot)
     if args.command == "shadow-experiment-report":
         return shadow_experiment_command()
+    if args.command == "cost-wall":
+        return cost_wall_command(args)
+    if args.command == "friction-calibrate":
+        return friction_calibrate_command(args)
     if args.command == "parameter-audit":
         return parameter_audit_command(args.path)
     if args.command == "shadow-collect":
@@ -511,6 +691,8 @@ def main() -> int:
         return raw_collect_command(args.symbol)
     if args.command == "raw-verify":
         return raw_verify_command(args.path, args.sha256)
+    if args.command == "market-check-verify":
+        return market_check_verify_command(args.snapshot, args.out)
     if args.command == "scheduler-ack":
         return scheduler_ack_command(args.run_id, args.scheduled_for)
     if args.command == "scheduler-check":
