@@ -6,9 +6,11 @@ Fallback research symbol: {symbol}
 
 Hard constraints:
 
-- Work only in `/Users/ge/Documents/AI trading agent/robinhood-ai-trader`.
+- Work only inside the current working directory, which the launchd worker has
+  already set to this project's root. Use relative paths; never assume an
+  absolute install location.
 - The scheduler has already written the atomic start ACK. Do not rewrite it.
-- Verify `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 main.py status` first. Continue only when system mode is
+- Verify `python3 main.py status` first. Continue only when system mode is
   READ_ONLY, live trading is false, order tools are false, and the kill switch
   is engaged.
 - Use only enabled Robinhood official MCP `get_*` tools. Never use review,
@@ -23,8 +25,8 @@ reconciliation, and a fresh option quote. PASS, FAIL, and UNKNOWN must be
 preserved; no missing value may be invented. This run does not authorize
 formal Shadow.
 
-For a CANARY run, call only the project-provided `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 main.py raw-collect
-SPY`, verify the returned immutable snapshot with `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3 main.py raw-verify`,
+For a CANARY run, call only the project-provided `python3 main.py raw-collect
+SPY`, verify the returned immutable snapshot with `python3 main.py raw-verify`,
 record the path and SHA-256, rebuild the dashboard, and stop. After-hours data
 may be stale; this canary tests launchd -> Claude Code CLI -> official read-only MCP
 -> durable file output, not market freshness or strategy performance.

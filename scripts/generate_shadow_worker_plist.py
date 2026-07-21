@@ -17,9 +17,11 @@ day's expectations:
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import date
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -28,12 +30,41 @@ if str(ROOT) not in sys.path:
 from monitoring.daily_schedule import DAILY_SLOTS
 
 LABEL = "com.robinhood-ai-trader.shadow-worker-v2"
-PYTHON = "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"
-WORKER = "/Users/ge/Documents/AI trading agent/robinhood-ai-trader/scripts/launchd_shadow_worker.py"
-WORKDIR = "/Users/ge/Documents/AI trading agent/robinhood-ai-trader"
 
 
-def render(day: date) -> str:
+def _launch_path(python: Path) -> str:
+    """PATH for the launchd session so the pilot agent can find python3/claude.
+
+    launchd hands processes a minimal PATH, so we prepend the interpreter's own
+    bin dir and the common CLI install locations (Homebrew, /usr/local, the
+    Claude native installer, ~/.local/bin).
+    """
+
+    home = Path.home()
+    candidates = [
+        str(python.parent),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        str(home / ".local/bin"),
+        str(home / ".claude/local"),
+        "/usr/bin",
+        "/bin",
+    ]
+    seen: list[str] = []
+    for entry in candidates:
+        if entry not in seen:
+            seen.append(entry)
+    return ":".join(seen)
+
+
+def render(day: date, *, python: Path | None = None, workdir: Path | None = None) -> str:
+    # Derive every path from the actual interpreter and repo location so the
+    # plist is correct wherever the repository lives.
+    python_path = (python or Path(sys.executable)).resolve()
+    work = (workdir or ROOT).resolve()
+    worker = work / "scripts/launchd_shadow_worker.py"
+    launch_path = _launch_path(python_path)
+
     intervals = []
     for hour, minute in sorted(DAILY_SLOTS):
         intervals.append(
@@ -45,6 +76,10 @@ def render(day: date) -> str:
             "    </dict>"
         )
     entries = "\n".join(intervals)
+    py = escape(str(python_path))
+    wk = escape(str(work))
+    wkr = escape(str(worker))
+    path_value = escape(launch_path)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -53,15 +88,20 @@ def render(day: date) -> str:
   <string>{LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{PYTHON}</string>
-    <string>{WORKER}</string>
+    <string>{py}</string>
+    <string>{wkr}</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>{WORKDIR}</string>
+  <string>{wk}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{path_value}</string>
+  </dict>
   <key>StandardOutPath</key>
-  <string>{WORKDIR}/logs/launchd-worker.stdout.log</string>
+  <string>{wk}/logs/launchd-worker.stdout.log</string>
   <key>StandardErrorPath</key>
-  <string>{WORKDIR}/logs/launchd-worker.stderr.log</string>
+  <string>{wk}/logs/launchd-worker.stderr.log</string>
   <key>StartCalendarInterval</key>
   <array>
 {entries}
